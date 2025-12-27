@@ -1,37 +1,58 @@
-# Jolt zkVM Porting TODO
+# Jolt zkVM Port Progress
 
 ## Current Status
-Starting Phase 1: Foundation (Common & Platform)
+Starting the port. Building project structure first.
 
-## Immediate Tasks
+## Completed
+- [x] Analyzed source structure
+- [x] Created porting plan
+- [x] Created TODO tracking
 
-### Project Setup
-- [ ] Create target/ directory structure
+## In Progress
+- [ ] Create Zig project structure
 - [ ] Create build.zig
-- [ ] Setup basic module structure
 
-### Phase 1: Common Module
-- [ ] Port attributes.rs
-- [ ] Port constants.rs
-- [ ] Port jolt_device.rs
+## Next Up
+1. Create directory structure (src/common, src/platform, src/tracer, src/core)
+2. Create build.zig with module system
+3. Port common/constants.zig
+4. Port common/attributes.zig
+5. Port common/jolt_device.zig
 
-### Phase 1: Platform Module
-- [ ] Port alloc.rs
-- [ ] Port cycle_tracking.rs
-- [ ] Port malloc_shim.rs
-- [ ] Port print.rs
-- [ ] Port random.rs
+## Module Status
 
-## Completed Tasks
-- [x] Initial project analysis
-- [x] Created PLAN.md
-- [x] Created TODO.md
+### common (0/4 files)
+- [ ] constants.zig
+- [ ] attributes.zig
+- [ ] jolt_device.zig
+- [ ] root.zig
+
+### jolt-platform (0/6 files)
+- [ ] alloc.zig
+- [ ] cycle_tracking.zig
+- [ ] malloc_shim.zig
+- [ ] print.zig
+- [ ] random.zig
+- [ ] root.zig
+
+### tracer (0/~50 files)
+- [ ] instruction definitions (consolidated)
+- [ ] emulator core
+- [ ] utilities
+
+### jolt-core (0/~100 files)
+- [ ] field module
+- [ ] poly module
+- [ ] msm module
+- [ ] subprotocols
+- [ ] transcripts
+- [ ] zkvm
+- [ ] utils
 
 ## Blockers
 None currently
 
 ## Notes
-- Total files to port: ~581
-- Core module has ~296 files
-- Will need to handle arkworks crypto library dependencies
-- Focus on getting basic structure working first, then fill in implementations
+- Target: ~160 Zig files from ~436 Rust files
+- Priority: Get a minimal compiling version first
+- Focus on core proving/verification path
