@@ -6,6 +6,7 @@ committing after each change, and tracking progress in a scratchpad.
 """
 
 import asyncio
+import glob as glob_module
 import os
 import sys
 from datetime import datetime
@@ -63,9 +64,79 @@ class RalphAgent:
             return Path(prompt).read_text()
         return prompt
 
+    def _is_ios_project(self) -> bool:
+        """Check if working directory contains iOS project indicators."""
+        ios_patterns = [
+            "*.xcodeproj",
+            "*.xcworkspace",
+            "**/*.pbxproj",
+            "**/Info.plist",
+            "Package.swift",  # Swift Package (could be iOS)
+            "Podfile",  # CocoaPods
+        ]
+
+        for pattern in ios_patterns:
+            matches = glob_module.glob(str(self.working_dir / pattern), recursive=True)
+            if matches:
+                return True
+        return False
+
+    def _get_ios_prompt_additions(self) -> str:
+        """Return iOS-specific prompt additions for simulator interaction."""
+        return f"""
+
+iOS SIMULATOR CAPABILITIES:
+You have access to iOS Simulator screenshot and navigation tools via the simulator module.
+
+AVAILABLE COMMANDS (run via Bash):
+```bash
+# Take a screenshot and get the path
+python -m ralph.simulator screenshot --context "description of expected screen" --json
+
+# Tap at coordinates (you determine coordinates from analyzing screenshots)
+python -m ralph.simulator tap --x 200 --y 400
+
+# Swipe (scroll)
+python -m ralph.simulator swipe --from 200,800 --to 200,200
+
+# Type text into focused field
+python -m ralph.simulator type "text to type"
+
+# Press hardware buttons
+python -m ralph.simulator button home
+
+# Check simulator status
+python -m ralph.simulator status --json
+```
+
+VISUAL VERIFICATION WORKFLOW:
+After making UI changes, verify them visually:
+
+1. Take a screenshot:
+   python -m ralph.simulator screenshot --context "main screen after adding button" --json
+
+2. Use the Read tool on the screenshot_path to analyze the image visually.
+   You can see the UI and estimate coordinates of elements.
+
+3. If you need to navigate to a different screen:
+   - Analyze the screenshot to find the button/element
+   - Estimate its coordinates (e.g., "Settings icon appears to be at ~200, 750")
+   - Tap: python -m ralph.simulator tap --x 200 --y 750
+   - Screenshot again to verify
+
+PROACTIVE SCREENSHOT BEHAVIOR:
+- After building/running the app: Screenshot to verify the build succeeded
+- After UI code changes: Screenshot to verify layout matches intent
+- When debugging UI issues: Screenshot to see current state
+- After fixing bugs: Screenshot to confirm the fix
+
+Screenshots are saved to: {self.scratchpad_dir}/screenshots/
+Document visual observations in: {self.scratchpad_dir}/NOTES.md
+"""
+
     def _build_system_prompt(self) -> str:
         """Build the system prompt for Ralph."""
-        return f"""You are Ralph, an autonomous coding agent that works continuously on tasks.
+        base_prompt = f"""You are Ralph, an autonomous coding agent that works continuously on tasks.
 
 CORE BEHAVIORS:
 1. Work methodically on the task, one step at a time
@@ -87,6 +158,12 @@ IMPORTANT:
 Current time: {datetime.now().isoformat()}
 Working directory: {self.working_dir}
 """
+
+        # Add iOS-specific capabilities if this is an iOS project
+        if self._is_ios_project():
+            base_prompt += self._get_ios_prompt_additions()
+
+        return base_prompt
 
     def _build_iteration_prompt(self) -> str:
         """Build the prompt for each iteration."""
