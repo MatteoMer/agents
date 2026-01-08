@@ -9,6 +9,7 @@ autonomously.
 __version__ = "0.1.0"
 
 from ralph.agent import RalphAgent, run_ralph
+from ralph.display import display, console, RalphDisplay
 from ralph.simulator import (
     SimulatorManager,
     SimulatorDevice,
@@ -20,10 +21,15 @@ from ralph.simulator import (
     IDBNotFoundError,
     XcodeNotFoundError,
 )
+from ralph.telegram import TelegramHandler
+from ralph.telegram_config import TelegramConfig, NotificationConfig
 
 __all__ = [
     "RalphAgent",
     "run_ralph",
+    "display",
+    "console",
+    "RalphDisplay",
     "SimulatorManager",
     "SimulatorDevice",
     "SimulatorState",
@@ -33,4 +39,7 @@ __all__ = [
     "NoBootedDeviceError",
     "IDBNotFoundError",
     "XcodeNotFoundError",
+    "TelegramHandler",
+    "TelegramConfig",
+    "NotificationConfig",
 ]

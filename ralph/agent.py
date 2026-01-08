@@ -11,9 +11,14 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from claude_code_sdk import query, ClaudeCodeOptions, AssistantMessage, ResultMessage
+
+from ralph.display import display
+
+if TYPE_CHECKING:
+    from ralph.telegram import TelegramHandler
 
 
 class RalphAgent:
@@ -31,6 +36,8 @@ class RalphAgent:
         scratchpad_dir: str = ".agent",
         max_iterations: Optional[int] = None,
         allowed_tools: Optional[list[str]] = None,
+        name: Optional[str] = None,
+        telegram_handler: Optional["TelegramHandler"] = None,
     ):
         """
         Initialize Ralph.
@@ -41,6 +48,8 @@ class RalphAgent:
             scratchpad_dir: Directory for Ralph's notes, TODOs, and plans
             max_iterations: Maximum loop iterations (None = infinite)
             allowed_tools: Tools Ralph can use (None = all safe tools)
+            name: Agent name for identification (defaults to working directory name)
+            telegram_handler: Optional Telegram handler for remote monitoring/control
         """
         self.prompt = self._load_prompt(prompt)
         self.working_dir = Path(working_dir).resolve()
@@ -50,10 +59,24 @@ class RalphAgent:
             "Read", "Write", "Edit", "Bash", "Glob", "Grep"
         ]
 
+        # Agent identification
+        self.name = name or self.working_dir.name
+
+        # Telegram integration
+        self.telegram = telegram_handler
+        if self.telegram:
+            self.telegram.set_agent(self)
+
         # Stats
         self.iterations = 0
         self.total_cost = 0.0
         self.start_time = None
+
+        # Control flags
+        self._paused = False
+        self._should_stop = False
+        self._prompt_injection: Optional[str] = None
+        self._current_task: Optional[asyncio.Task] = None
 
         # Ensure scratchpad exists
         self.scratchpad_dir.mkdir(parents=True, exist_ok=True)
@@ -182,17 +205,54 @@ Your task:
 Your TODO.md shows your current progress. Review it and continue where you left off.
 """
 
+        # Add one-time prompt injection if present
+        if self._prompt_injection:
+            iteration_context += f"""
+
+--- USER HINT ---
+{self._prompt_injection}
+"""
+            self._prompt_injection = None
+
         return iteration_context
+
+    # --- Control Methods ---
+
+    def pause(self):
+        """Pause the agent after current iteration."""
+        self._paused = True
+
+    def resume(self):
+        """Resume a paused agent."""
+        self._paused = False
+
+    def force_iteration(self, hint: Optional[str] = None):
+        """
+        Force start a new iteration, optionally with a hint.
+
+        Args:
+            hint: Optional message to inject into the next iteration prompt
+        """
+        if hint:
+            self._prompt_injection = hint
+        if self._current_task:
+            self._current_task.cancel()
+
+    def stop(self):
+        """Gracefully stop the agent."""
+        self._should_stop = True
+        if self._current_task:
+            self._current_task.cancel()
 
     async def run_iteration(self) -> dict:
         """Run a single iteration of the Ralph loop."""
         self.iterations += 1
         iteration_start = datetime.now()
 
-        print(f"\n{'='*60}")
-        print(f"RALPH ITERATION {self.iterations}")
-        print(f"Started: {iteration_start.isoformat()}")
-        print(f"{'='*60}\n")
+        display.print_iteration_header(
+            iteration=self.iterations,
+            started_at=iteration_start.isoformat(),
+        )
 
         options = ClaudeCodeOptions(
             allowed_tools=self.allowed_tools,
@@ -217,7 +277,7 @@ Your TODO.md shows your current progress. Review it and continue where you left 
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
                         if hasattr(block, "text"):
-                            print(block.text)
+                            display.print_assistant_message(block.text)
 
                 elif isinstance(message, ResultMessage):
                     result["completed"] = True
@@ -227,13 +287,14 @@ Your TODO.md shows your current progress. Review it and continue where you left 
 
                     self.total_cost += result["cost"]
 
-                    print(f"\n--- Iteration Complete ---")
-                    print(f"Turns: {result['turns']}")
-                    print(f"Cost: ${result['cost']:.4f}")
-                    print(f"Total cost so far: ${self.total_cost:.4f}")
+                    display.print_iteration_complete(
+                        turns=result["turns"],
+                        cost=result["cost"],
+                        total_cost=self.total_cost,
+                    )
 
         except Exception as e:
-            print(f"\n[ERROR] Iteration failed: {e}")
+            display.print_error(f"Iteration failed: {e}")
             result["error"] = str(e)
 
         result["ended_at"] = datetime.now().isoformat()
@@ -259,51 +320,78 @@ Your TODO.md shows your current progress. Review it and continue where you left 
         """Run the Ralph loop."""
         self.start_time = datetime.now()
 
-        print(f"""
-╔══════════════════════════════════════════════════════════════╗
-║                     RALPH AGENT STARTED                       ║
-╠══════════════════════════════════════════════════════════════╣
-║  Working directory: {str(self.working_dir)[:40]:<40} ║
-║  Scratchpad: {str(self.scratchpad_dir.name):<47} ║
-║  Max iterations: {str(self.max_iterations or 'unlimited'):<43} ║
-╚══════════════════════════════════════════════════════════════╝
-""")
+        display.print_banner(
+            working_dir=str(self.working_dir),
+            scratchpad_dir=self.scratchpad_dir.name,
+            max_iterations=self.max_iterations,
+        )
+        display.print_task(self.prompt)
 
-        print("TASK:")
-        print("-" * 60)
-        print(self.prompt[:500] + ("..." if len(self.prompt) > 500 else ""))
-        print("-" * 60)
+        # Start Telegram bot if configured
+        if self.telegram:
+            try:
+                await self.telegram.start()
+                await self.telegram.notify_start(self)
+            except Exception as e:
+                display.print_warning(f"Telegram failed to start: {e}")
+                self.telegram = None
 
         try:
-            while True:
+            while not self._should_stop:
                 if self.max_iterations and self.iterations >= self.max_iterations:
-                    print(f"\n[RALPH] Max iterations ({self.max_iterations}) reached. Stopping.")
+                    display.print_max_iterations_reached(self.max_iterations)
                     break
 
-                result = await self.run_iteration()
+                # Check pause state
+                while self._paused and not self._should_stop:
+                    await asyncio.sleep(0.5)
+
+                if self._should_stop:
+                    break
+
+                # Run iteration (can be cancelled by force_iteration)
+                self._current_task = asyncio.create_task(self._run_iteration_inner())
+                try:
+                    result = await self._current_task
+                except asyncio.CancelledError:
+                    # Force iteration requested - continue to next iteration
+                    display.print_info("Iteration interrupted, starting new iteration...")
+                    continue
+                finally:
+                    self._current_task = None
+
+                # Send Telegram notification if configured
+                if self.telegram:
+                    await self.telegram.notify_iteration(self, result)
 
                 # Brief pause between iterations to avoid hammering the API
                 await asyncio.sleep(2)
 
         except KeyboardInterrupt:
-            print("\n\n[RALPH] Interrupted by user. Shutting down...")
+            display.print_interrupted()
 
         finally:
+            # Stop Telegram and send notification
+            if self.telegram:
+                await self.telegram.notify_stop(self)
+                await self.telegram.stop()
+
             self._print_summary()
+
+    async def _run_iteration_inner(self) -> dict:
+        """Internal iteration runner that can be cancelled."""
+        return await self.run_iteration()
 
     def _print_summary(self):
         """Print final summary."""
         duration = datetime.now() - self.start_time if self.start_time else None
+        duration_str = str(duration).split(".")[0] if duration else "N/A"
 
-        print(f"""
-╔══════════════════════════════════════════════════════════════╗
-║                     RALPH SESSION COMPLETE                    ║
-╠══════════════════════════════════════════════════════════════╣
-║  Total iterations: {self.iterations:<41} ║
-║  Total cost: ${self.total_cost:<44.2f} ║
-║  Duration: {str(duration).split('.')[0] if duration else 'N/A':<49} ║
-╚══════════════════════════════════════════════════════════════╝
-""")
+        display.print_summary(
+            iterations=self.iterations,
+            total_cost=self.total_cost,
+            duration=duration_str,
+        )
 
 
 async def run_ralph(
@@ -311,6 +399,8 @@ async def run_ralph(
     working_dir: str = ".",
     scratchpad_dir: str = ".agent",
     max_iterations: Optional[int] = None,
+    name: Optional[str] = None,
+    telegram_handler: Optional["TelegramHandler"] = None,
 ):
     """Convenience function to run Ralph."""
     agent = RalphAgent(
@@ -318,5 +408,7 @@ async def run_ralph(
         working_dir=working_dir,
         scratchpad_dir=scratchpad_dir,
         max_iterations=max_iterations,
+        name=name,
+        telegram_handler=telegram_handler,
     )
     await agent.run()

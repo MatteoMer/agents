@@ -30,6 +30,9 @@ classifiers = [
 ]
 dependencies = [
     "claude-code-sdk>=0.0.25",
+    "rich>=13.0",
+    "python-telegram-bot>=21.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
